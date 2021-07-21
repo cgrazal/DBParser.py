@@ -1,0 +1,43 @@
+#Parser to create report from original files.
+#!/usr/bin/python
+import DBParser_functions as DB
+import sqlite3
+import sys
+
+#Get data source
+data_source=str(sys.argv[-1])
+print(data_source)
+metrics_source=data_source+"/_vsalign_analyzed_data/_metrics"
+snps_source = data_source+"/_vsalign_analyzed_data/_snps/"
+GeisInput= data_source+"/_metadata/Geis_Surv.csv"
+lineages = data_source+"/_annotation/results_pangolin_nextclade.csv"
+lablimsInput = data_source+"/_metadata/lab_lims_testData.csv"
+
+cgs_num_split = data_source.split("/")
+cgs_num =[name for name in cgs_num_split if name.startswith("CGS_00")]
+
+#database_input = "WGS_"+cgs_str+".db"
+database_input = "WGS_testRun.db"
+
+#Check is database exists:
+
+#create database
+DB.main(database_input)
+
+sql = sqlite3.connect(database_input)
+
+#get sample names to create subset from Geis
+DB.SamplesFunc(metrics_source)
+
+#input data
+#SAMPLE_METADATA_TABLE
+DB.Metadata(GeisInput, database_input, metrics_source)
+
+#ANALYZED_DATA_TABLE
+DB.AnalyzedData(metrics_source, lineages, database_input, cgs_num)
+
+#LAB_LIMS TABLE
+DB.LabLimsData(lablimsInput, database_input)
+
+#SAMPLE VARIANTS TABLE
+DB.SampleVarsData(snps_source, database_input)
