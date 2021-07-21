@@ -2,7 +2,7 @@ from tkinter import *
 from tkinter.ttk import Treeview
 import sqlite3
 from tkinter import messagebox
-from db1_WITHADDITIONS import Database
+from db1 import Database
 
 db=Database('WGS_testRun.db')
 
