@@ -1,0 +1,291 @@
+import shutil
+from shutil import copyfile
+import sys
+from sys import exit 
+import os
+import sqlite3
+from sqlite3 import Error
+import pandas as pd 
+import csv
+import numpy as np
+from pathlib import Path
+
+#Create mysqlite3 DB
+def create_connection(sqliteDB):
+    conn=None
+    try:
+        conn=sqlite3.connect(sqliteDB)
+        return conn
+    except Error as e:
+        print(e)
+    
+    return conn
+
+def create_table(conn, create_table_sql):
+	try:
+		c=conn.cursor()
+		c.execute(create_table_sql)
+	except Error as e:
+		print (e)
+
+def main(DBname):
+	database = DBname
+
+	sql_create_metadata_table="""CREATE TABLE IF NOT EXISTS SAMPLE_METADATA_TABLE(
+	ID_column INTEGER,
+	ATTR_ID TEXT,
+	ATTR_VAL INTEGER
+	);"""
+
+	sql_create_lab_lims_table="""CREATE TABLE IF NOT EXISTS LAB_LIMS_TABLE(
+	ID_column INTEGER,
+	ATTR_ID TEXT,
+	ATTR_VAL INTEGER
+	);"""
+
+	sql_create_analyzed_data_table="""CREATE TABLE IF NOT EXISTS ANALYZED_DATA_TABLE(
+	ID_column INTEGER,
+	ATTR_ID TEXT,
+	ATTR_VAL INTEGER
+	);"""
+
+	sql_create_sample_variants_table="""CREATE TABLE IF NOT EXISTS SAMPLE_VARIANTS_TABLE(
+	ID_column INTEGER,
+	ATTR_ID TEXT,
+	ATTR_VAL INTEGER
+	);"""
+    
+	conn=create_connection(database)
+
+	if conn is not None:
+		create_table(conn, sql_create_metadata_table)
+		create_table(conn, sql_create_lab_lims_table)
+		create_table(conn, sql_create_analyzed_data_table)
+		create_table(conn, sql_create_sample_variants_table)
+		print ("\nConnected to database!\n")
+        
+	else:
+		print ("Error- Cannot create the database connection.")
+
+#Get sample names and CGS
+def SamplesFunc(data_path):
+	Cleaned = data_path+"/01_Cleaning.met"
+	with open(Cleaned) as csv_file:
+		cl_data = pd.read_csv(csv_file, sep='\t')
+	cl_data.sort_values(by=['SAMPLE'], inplace=True)
+	samp_names = cl_data['SAMPLE'].tolist()
+	for item in samp_names:
+		if item.endswith("Sample"):
+			samp_names.remove(item)
+	for item in samp_names:
+		if item.endswith("Sequence"):
+			samp_names.remove(item)
+	samp_name_split=[name.split('_')[1] + '_' + name.split('_')[2] for name in samp_names]
+	return samp_name_split
+	print (samp_name_split)
+
+random_int = np.random.randint(1,9999,1)
+
+#Input data
+def Metadata(m_file, dbname, mets_path):
+	pd.options.mode.chained_assignment=None
+	with open(m_file) as csv_file:
+		mdata = pd.read_csv(csv_file)
+	samplelist = SamplesFunc(mets_path)
+
+	mdata = mdata[mdata["Sample_Name"].isin(samplelist)]
+	mdata.rename(columns={'Sample_Name':'SAMPLE_ID'}, inplace=True)
+
+	mdata.sort_values(by=['SAMPLE_ID'], inplace=True)
+	mdata=mdata.reset_index(drop=True)
+	mdata["ROW_ID"] = mdata.index + 1
+
+	mdata.columns=['SAMPLE_ID', 'STAGE', 'PRIORITY','INSTITUTION','SUBMITTER','DATE_ARRIVED','STATUS','FREEZER','BOX_LOCATION','TYPE','CGS_RUN_NUMBER',
+                       'REPORTED','NOTES','CT_E','CT_N2','CT_PANTHERFUSION','CT_GENEEXPERT_XVI','DATE_OF_COLLECTION','PERCENT_COVERAGE','AVE_DEPTH',
+                       'PANGOLIN_LINEAGE','NEXTSTRAIN_CLADE','MUTATIONS_RELATIVE_TO_WUHAN1','NS_MUT_IN_S',"NS_MUT_IN_M",'NS_MUT_IN_N','GENBANK_NUMBER', 'ROW_ID']
+	cols = mdata.columns.tolist()
+	cols.pop(-1)
+	mdata_results = pd.melt(mdata, id_vars=["ROW_ID"], value_vars=cols, var_name="ATTR_ID", value_name="ATTR_VAL")
+	mdata_results2 = mdata_results.assign(FILE_ID=(random_int[0]))
+	mdata_results2["ID_column"] = mdata_results2["FILE_ID"].astype(str) + " ; " + mdata_results2["ROW_ID"].astype(str)
+	del mdata_results2["ROW_ID"]
+	del mdata_results2["FILE_ID"]
+
+	#insert into dataframe
+	databasename = dbname
+	conn=sqlite3.connect(databasename)
+	cur=conn.cursor()
+	mdata_results2.to_sql("SAMPLE_METADATA_TABLE", conn, if_exists='append', index=False)
+	conn.commit()
+
+def AnalyzedData(mets_path, pang_nextc_file, dbname, CGSNumber):
+	pd.options.mode.chained_assignment=None
+	Cleaned = mets_path+"/01_Cleaning.met"
+	Aligned = mets_path+"/02_Aligned.met"
+	SNPTable = mets_path+"/03_SNP_Table.met"
+
+	with open(Cleaned) as csv_file:
+		cl_data = pd.read_csv(csv_file, sep='\t')
+
+	with open(Aligned) as csv_file:
+		al_data = pd.read_csv(csv_file, sep='\t')
+
+	with open(SNPTable) as csv_file:
+		snp_data = pd.read_csv(csv_file, sep='\t')
+
+	with open(pang_nextc_file) as csv_file:
+		lineage_data = pd.read_csv(csv_file)
+
+	cl_data.sort_values(by=['SAMPLE'], inplace=True)
+	al_data.sort_values(by=['SAMPLE'], inplace=True)
+	snp_data.sort_values(by=['SAMPLE'], inplace=True)
+	lineage_data.sort_values(by=['seqName'], inplace=True)
+    
+	#take average of paired reads in Aligned file
+	al_data2 = al_data.groupby('SAMPLE', as_index=False).mean()
+    
+	samp_names1 = cl_data['SAMPLE'].tolist()
+	samp_name_split1=[name.split('_')[1] + '_' + name.split('_')[2] for name in samp_names1]
+	cl_data["SAMPLE"] = samp_name_split1
+   
+	samp_names2 = al_data2['SAMPLE'].tolist()
+	samp_name_split2=[name.split('_')[1] + '_' + name.split('_')[2] for name in samp_names2]
+	al_data2["SAMPLE"] = samp_name_split2
+    
+	samp_names3 = snp_data['SAMPLE'].tolist()
+	samp_name_split3 = [name.split('_')[1] + '_' + name.split('_')[2] for name in samp_names3]
+	snp_data["SAMPLE"] = samp_name_split3
+    
+	samp_names4 = lineage_data['seqName'].tolist()
+	samp_name_split4=[name.split('_')[1] + '_' + name.split('_')[2] for name in samp_names4]
+	lineage_data["seqName"] = samp_name_split4
+
+	#drop columns/rows not needed from results
+	lineage = lineage_data[['seqName','PangolinLineage','Most common countries', 'Nextclade','aaSubstitutions']]
+
+	lineage.columns=['SAMPLE_ID', 'PANGO_LINEAGE', 'Pangolin_Most_common_countries', 'CLADE', 'Nextclade_aaSubstitutions']
+	lineage.drop(lineage.index[lineage['SAMPLE_ID'] == 'NC_045512.2'], inplace=True)
+	
+	cl_data.rename(columns={'SAMPLE':'SAMPLE_ID'}, inplace=True)
+	al_data2.rename(columns={'SAMPLE':'SAMPLE_ID'}, inplace=True)
+	snp_data.rename(columns={'SAMPLE':'SAMPLE_ID'}, inplace=True)
+
+	#combine dfs
+	merged1=pd.merge(left=cl_data, right=al_data2, how='outer', left_on="SAMPLE_ID", right_on="SAMPLE_ID")
+	metData= pd.merge(left=merged1, right=snp_data, how='outer', left_on="SAMPLE_ID", right_on="SAMPLE_ID")
+
+	Results_int = pd.merge(left=metData, right=lineage, how='outer', left_on="SAMPLE_ID", right_on='SAMPLE_ID')
+	Results_int.sort_values(by=['SAMPLE_ID'], inplace=True)
+
+	#cgs_pulled = ' '.join(map(str,CGSNumber))
+
+	Results_int['CGS_Number']=CGSNumber*len(Results_int)
+
+	Results_int["ROW_ID"] = Results_int.index + 1
+
+	Results_int.columns=['SAMPLE_ID', 'RAW_READS','INPUT','Q30','DUP','CHI','BMD','BMR','PRI','SERR','NM_1','NM_2','QUA','REM','PERCENT_TOT_REM','ALIGNED','UNALIGNED','COVERAGE','AVG_DEPTH','MUTATIONS','MUT_SYN','MUT_NSYN','SUB_CLONAL','INDELS','BGE','SCD','SCD_SYN','SCD_NSYN','TRS','TRV','AVG_TRS','AVG_TRV','AVG_IND','PANGO_LINEAGE','MOST_COMMON_COUNTRIES','CLADE','AA_SUBSTITUTIONS', 'CGS_NUMBER','ROW_ID']
+	cols = Results_int.columns.tolist()
+	cols.pop(-1)
+	Analyzed_Results = pd.melt(Results_int, id_vars=["ROW_ID"],value_vars=cols, var_name='ATTR_ID',value_name="ATTR_VAL")
+
+	Analyzed_Results = Analyzed_Results.assign(FILE_ID=(random_int[0]))
+	Analyzed_Results["ID_column"] = Analyzed_Results["FILE_ID"].astype(str) + " ; " + Analyzed_Results["ROW_ID"].astype(str)
+	del Analyzed_Results["ROW_ID"]
+	del Analyzed_Results["FILE_ID"]
+	Analyzed_Results = Analyzed_Results[['ID_column','ATTR_ID', 'ATTR_VAL']]
+#insert dataframes
+	databasename = dbname
+	conn=sqlite3.connect(databasename)
+	cur=conn.cursor()
+	Analyzed_Results.to_sql("ANALYZED_DATA_TABLE", conn, if_exists='append', index=False)
+	conn.commit()
+
+	print("\nAnalyzed_data input complete. [2/4]\n")
+
+def LabLimsData(l_file, dbname):
+	pd.options.mode.chained_assignment=None
+	with open(l_file) as csv_file:
+		ldata = pd.read_csv(csv_file)
+
+	ldata["ROW_ID"] = ldata.index + 1
+	cols = ldata.columns.tolist()
+	cols.pop(-1)
+
+	ldata_results = pd.melt(ldata, id_vars=["ROW_ID"], value_vars=cols, var_name="ATTR_ID", value_name="ATTR_VAL")
+	ldata_results2 = ldata_results.assign(FILE_ID=(random_int[0]))
+	
+	ldata_results2["ID_column"] = ldata_results2["FILE_ID"].astype(str) + " ; " + ldata_results2["ROW_ID"].astype(str)
+	del ldata_results2["ROW_ID"]
+	del ldata_results2["FILE_ID"]
+	ldata_final = ldata_results2[['ID_column','ATTR_ID', 'ATTR_VAL']]
+
+	databasename=dbname
+	conn=sqlite3.connect(databasename)
+	conn.text_factory=str
+	cur=conn.cursor()
+	ldata_final.to_sql("LAB_LIMS_TABLE", conn, if_exists='append', index=False)
+	conn.commit()
+
+	print("\nLabLims data input complete.[3/4] \n")
+
+def SampleVarsData(SV_path, dbname):
+	pd.options.mode.chained_assignment=None
+	results =[]
+	results += [each for each in os.listdir(SV_path) if each.endswith('.snp')]
+
+	files = []
+	for target in results:
+		filenames = SV_path+"/"+target
+		files.append(filenames)
+	for item in files:
+		if item.endswith("snpSummary.snp"):
+			files.remove(item)
+
+	snpData = []
+	for each in files:
+		with open(each) as csv_file:
+			data = pd.read_csv(csv_file, sep='\t', low_memory=False)
+			data["SAMPLE_PATH"]=each
+			snpData.append(data)
+			AllData = pd.concat(snpData)
+
+			namesplit = AllData["SAMPLE_PATH"].str.split("_").tolist()
+			name = [el[-3]+"_"+el[-2] for el in namesplit]
+			AllData["SAMPLE_ID"] = name
+			SV_DB = AllData[["SAMPLE_ID","TYPE", "BASE", "SNP","FREQ", "CODON", "FEATURE", "DEPTH","DEL", "INS", "SCD", "NOTE"]]
+			SV_DB.sort_values(by=['SAMPLE_ID'], inplace=True)
+
+			SV_DB["ROW_ID"]=(SV_DB['SAMPLE_ID']!=SV_DB['SAMPLE_ID'].shift()).cumsum()
+
+			cols = SV_DB.columns.tolist()
+			cols.pop(-1)
+
+			SV_Results = pd.melt(SV_DB, id_vars=["ROW_ID"],value_vars=cols, var_name='ATTR_ID',value_name="ATTR_VAL")
+
+			SV_Results = SV_Results.assign(FILE_ID=(random_int[0]))
+			SV_Results["ID_column"] = SV_Results["FILE_ID"].astype(str) + " ; " + SV_Results["ROW_ID"].astype(str)
+			del SV_Results["ROW_ID"]
+			del SV_Results["FILE_ID"]
+			SV_Results = SV_Results[['ID_column','ATTR_ID', 'ATTR_VAL']]
+
+
+	databasename = dbname
+	conn=sqlite3.connect(databasename)
+	cur=conn.cursor()
+	SV_Results.to_sql("SAMPLE_VARIANTS_TABLE", conn, if_exists='append', index=False)
+	conn.commit()
+
+	print("\nSample Variants data input complete. [4/4]\n")
+
+	print("\nDatabase complete!\n")
+
+
+
+
+
+
+
+
+
+
+
